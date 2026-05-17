@@ -91,7 +91,7 @@ DEFINE FRAME DEFAULT-FRAME
     WITH 1 DOWN NO-BOX KEEP-TAB-ORDER OVERLAY 
          SIDE-LABELS NO-UNDERLINE THREE-D 
          AT COLUMN 1 ROW 1
-         SIZE 171.8 BY 28.1 WIDGET-ID 100.
+         SIZE 172.2 BY 30.1 WIDGET-ID 100.
 
 
 /* *********************** Procedure Settings ************************ */
@@ -111,12 +111,12 @@ IF SESSION:DISPLAY-TYPE = "GUI":U THEN
   CREATE WINDOW C-Win ASSIGN
          HIDDEN             = YES
          TITLE              = "TAPI Event Handler"
-         HEIGHT             = 28.1
-         WIDTH              = 171.8
-         MAX-HEIGHT         = 28.1
-         MAX-WIDTH          = 171.8
-         VIRTUAL-HEIGHT     = 28.1
-         VIRTUAL-WIDTH      = 171.8
+         HEIGHT             = 30.1
+         WIDTH              = 172.2
+         MAX-HEIGHT         = 30.1
+         MAX-WIDTH          = 189.8
+         VIRTUAL-HEIGHT     = 30.1
+         VIRTUAL-WIDTH      = 189.8
          SHOW-IN-TASKBAR    = no
          CONTROL-BOX        = no
          MIN-BUTTON         = no
@@ -186,10 +186,7 @@ OR ENDKEY OF {&WINDOW-NAME} ANYWHERE
 &ANALYZE-SUSPEND _UIB-CODE-BLOCK _CONTROL C-Win C-Win
 ON PARENT-WINDOW-CLOSE OF C-Win /* TAPI Event Handler */
 DO:
-      IF hClientSocket:CONNECTED() THEN
-        hClientSocket:DISCONNECT().
-        
-    DELETE OBJECT hClientSocket.
+    RUN SocketConnectionCleanUp.
 
 END.
 
@@ -235,7 +232,7 @@ DO ON ERROR   UNDO MAIN-BLOCK, LEAVE MAIN-BLOCK
     ON END-KEY UNDO MAIN-BLOCK, LEAVE MAIN-BLOCK:
     RUN enable_UI.
   
-    Run InitialiseSocketConnection. 
+    RUN SocketConnectionInitialise. 
   
 /*     IF NOT THIS-PROCEDURE:PERSISTENT THEN */
 /*         WAIT-FOR CLOSE OF THIS-PROCEDURE. */
@@ -255,11 +252,8 @@ PROCEDURE CloseTAPIHandler :
   Notes:       
 ------------------------------------------------------------------------------*/
     
-    IF hClientSocket:CONNECTED() THEN
-        hClientSocket:DISCONNECT().
-        
-    DELETE OBJECT hClientSocket.
-
+    RUN SocketConnectionCleanUp.
+    
     APPLY "Close" TO THIS-PROCEDURE. 
 
 END PROCEDURE.
@@ -308,26 +302,24 @@ END PROCEDURE.
 /* _UIB-CODE-BLOCK-END */
 &ANALYZE-RESUME
 
-&ANALYZE-SUSPEND _UIB-CODE-BLOCK _PROCEDURE InitialiseSocketConnection C-Win 
-PROCEDURE InitialiseSocketConnection PRIVATE :
+&ANALYZE-SUSPEND _UIB-CODE-BLOCK _PROCEDURE EventLogWrite C-Win 
+PROCEDURE EventLogWrite :
 /*------------------------------------------------------------------------------
-     Purpose:
-     Notes:
-    ------------------------------------------------------------------------------*/
-
-    CREATE SOCKET hClientSocket.
+  Purpose:     
+  Parameters:  <none>
+  Notes:       
+------------------------------------------------------------------------------*/
     
-    /* 2. Attempt connection to the server (Host can be an IP or hostname) */
-    lConnected = hClientSocket:CONNECT("-H localhost -S 1471") NO-ERROR.
+    DEFINE INPUT PARAMETER pcResponse AS CHARACTER NO-UNDO.
     
-    if NOT lConnected then 
-        RETURN.
+    do with frame {&Frame-name}:
         
-    hClientSocket:SET-READ-RESPONSE-PROCEDURE( "ReadResponse"  , this-procedure).
-    //hClientSocket:SET-READ-RESPONSE-PROCEDURE( "ReadResponse").    
-
+        edEventLog:MOVE-TO-EOF( ).
+        edEventLog:INSERT-STRING (pcResponse).
+        
+    end.
+    
     RETURN.
-
 END PROCEDURE.
 
 /* _UIB-CODE-BLOCK-END */
@@ -341,9 +333,9 @@ PROCEDURE OnIncomingCallEvent :
   Notes:       
   
       /* {"Type":"OnIncomingCall",
-        "Timestamp":"2026-05-16T13:23:59.182319\u002B12:00",
+        "Timestamp":"2026-05-16T13:23:59",
         "Data":{"CallID":9877099,
-                "CallerNumber":"2102155338",
+                "CallerNumber":"0121232156",
                 "CallerName":"Unknown Caller",
                 "CalledNumber":"02825508013",
                 "CalledName":"Main Line",
@@ -362,13 +354,18 @@ PROCEDURE OnIncomingCallEvent :
         RUN IncomingCallCallerIDNumber IN hnPartentProcudure (INPUT objJSONData:GetCharacter("CallerNumber")).
     
     RETURN. 
+    
+    FINALLY:
+        DELETE OBJECT objJSONData.
+    END.
+    
 END PROCEDURE.
 
 /* _UIB-CODE-BLOCK-END */
 &ANALYZE-RESUME
 
-&ANALYZE-SUSPEND _UIB-CODE-BLOCK _PROCEDURE ReadJSONResponse C-Win 
-PROCEDURE ReadJSONResponse PRIVATE :
+&ANALYZE-SUSPEND _UIB-CODE-BLOCK _PROCEDURE ParserJSONResponse C-Win 
+PROCEDURE ParserJSONResponse PRIVATE :
 /*------------------------------------------------------------------------------
   Purpose:     
   Parameters:  <none>
@@ -394,7 +391,7 @@ PROCEDURE ReadJSONResponse PRIVATE :
         
     IF objJSONObject:has("Type") THEN
     DO:
-       STATUS DEFAULT objJSONObject:GetCharacter("Type").
+       STATUS INPUT objJSONObject:GetCharacter("Type").
        
        CASE objJSONObject:GetCharacter("Type"):
             WHEN "OnIncomingCall" THEN
@@ -451,10 +448,9 @@ PROCEDURE ReadResponse :
     cResponse = GET-STRING(mReadBuffer, 1).
         
     /* Output the server's raw response */
-    do with frame {&Frame-name}:
-        edEventLog:MOVE-TO-EOF( ).
-        edEventLog:INSERT-STRING (cResponse).
-    end.
+    
+    RUN EventLogWrite(INPUT cResponse).
+    
         
     //If there is a queue of messages bunched up, split them out to indiviual JSON chunks.
     DO iChunkEntrie = 1 TO NUM-ENTRIES(cResponse, '~r'):
@@ -462,7 +458,7 @@ PROCEDURE ReadResponse :
         cResponseSpilt = ENTRY(iChunkEntrie, cResponse, '~r' ).        
         
         IF LENGTH(cResponseSpilt) GT 0 THEN
-            RUN ReadJSONResponse (INPUT cResponseSpilt).
+            RUN ParserJSONResponse (INPUT cResponseSpilt).
     
     END.
     
@@ -473,6 +469,62 @@ PROCEDURE ReadResponse :
         /* Clean up the dynamic read buffer allocation */
         SET-SIZE(mReadBuffer) = 0. 
     end.
+END PROCEDURE.
+
+/* _UIB-CODE-BLOCK-END */
+&ANALYZE-RESUME
+
+&ANALYZE-SUSPEND _UIB-CODE-BLOCK _PROCEDURE SocketConnectionCleanUp C-Win 
+PROCEDURE SocketConnectionCleanUp :
+/*------------------------------------------------------------------------------
+  Purpose:     
+  Parameters:  <none>
+  Notes:       
+------------------------------------------------------------------------------*/
+
+    IF hClientSocket:CONNECTED() THEN
+        hClientSocket:DISCONNECT().
+        
+    DELETE OBJECT hClientSocket.
+    
+    RETURN.
+
+END PROCEDURE.
+
+/* _UIB-CODE-BLOCK-END */
+&ANALYZE-RESUME
+
+&ANALYZE-SUSPEND _UIB-CODE-BLOCK _PROCEDURE SocketConnectionInitialise C-Win 
+PROCEDURE SocketConnectionInitialise PRIVATE :
+/*------------------------------------------------------------------------------
+     Purpose:
+     Notes:
+    ------------------------------------------------------------------------------*/
+
+    CREATE SOCKET hClientSocket.
+    
+    
+    hClientSocket:SET-SOCKET-OPTION ( "SO-KEEPALIVE" , "TRUE" ). 
+
+    
+    hClientSocket:CONNECT("-H localhost -S 1471") NO-ERROR.
+    
+    if NOT hClientSocket:CONNECTED() then 
+    DO:
+    
+        RUN EventLogWrite("Failed to connect to TAPI Monitor~r"). 
+        STATUS INPUT "Connection Failed!".
+        RETURN.
+    END.
+    
+    RUN EventLogWrite("Connected to TAPI Monitor~r").
+    STATUS INPUT "Connected...".
+        
+    hClientSocket:SET-READ-RESPONSE-PROCEDURE( "ReadResponse"  , this-procedure).
+    //hClientSocket:SET-READ-RESPONSE-PROCEDURE( "ReadResponse").    
+
+    RETURN.
+
 END PROCEDURE.
 
 /* _UIB-CODE-BLOCK-END */
